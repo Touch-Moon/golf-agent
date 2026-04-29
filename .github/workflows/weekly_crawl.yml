@@ -1,0 +1,52 @@
+name: Weekly Golf Tee Time Crawl
+
+on:
+  schedule:
+    # 매주 월요일 오전 8시 (위니펙 CDT = UTC-5 → 13:00 UTC)
+    - cron: '0 13 * * 1'
+  workflow_dispatch:   # GitHub UI에서 수동 실행 가능
+
+jobs:
+  crawl:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Install Playwright browsers
+        run: python -m playwright install chromium --with-deps
+
+      - name: Run crawl
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_TOKEN_V2: ${{ secrets.NOTION_TOKEN_V2 }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          API_SECRET_KEY: ${{ secrets.API_SECRET_KEY }}
+        run: |
+          # TELEGRAM_BOT_TOKEN 이 설정되지 않으면 --dry-run 으로 실행 (Notion은 항상 동작)
+          if [ -z "$TELEGRAM_BOT_TOKEN" ] || [ "$TELEGRAM_BOT_TOKEN" = "your_bot_token_here" ]; then
+            echo "Telegram not configured — running in dry-run mode"
+            python3 run.py --dry-run
+          else
+            python3 run.py
+          fi
+
+      - name: Upload CSV backup
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: crawl-backup-${{ github.run_id }}
+          path: backup/*.csv
+          retention-days: 90
