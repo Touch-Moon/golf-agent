@@ -41,9 +41,22 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Install Playwright Chromium
+      - name: Install Playwright Chromium (no apt; ubuntu-latest already has libs)
+        timeout-minutes: 5
         run: |
-          python -m playwright install --with-deps chromium
+          # --with-deps is omitted on purpose: it triggers apt-get update which
+          # has hung at azure.archive.ubuntu.com/.../noble-security in past runs
+          # (2026-05-05, runs 25389378644 + 25391888741) and timed out at 20m.
+          # ubuntu-latest already ships the libs Chromium needs.
+          for attempt in 1 2 3; do
+            python -m playwright install chromium && break
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Playwright install failed after 3 attempts"
+              exit 1
+            fi
+            echo "::warning::Playwright install attempt $attempt failed; retrying in 15s..."
+            sleep 15
+          done
 
       - name: Winnipeg-time window guard (handles DST automatically)
         id: guard
