@@ -159,7 +159,7 @@ INDIVIDUAL_COURSES = [
         "booking_url": "https://belacres.cps.golf/",
         "homepage": "https://www.belacres.com/",
         "phone": "(204) 632-8337",
-        "system": "cps_golf",
+        "system": "cps_golf_belacres",
         "distance_km": 24,
         "holes": 18,
         "fallback_price": 65,

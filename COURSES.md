@@ -78,9 +78,9 @@ URL이 바뀌면 이 파일과 [config.py](config.py)를 같이 업데이트.
 | 코스 | 예약 URL | 상태 |
 |---|---|---|
 | Bridges Golf Course | https://bridgesgccan.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=0&TeeOffTimeMax=23.999722222222225 | ✓ 동작 |
-| Bel Acres Golf and Country Club | https://belacres.cps.golf/ | ⚠️ 미해결 — Cloudflare 통과 후 코스 선택 UI에 멈춤 (`searchTeetime.noCourseSelected` 상태). Angular SPA가 추가 인터랙션 없이 TeeTimes API 호출 안 함 |
+| Bel Acres Golf and Country Club | https://belacres.cps.golf/ | ✓ FlareSolverr — `cps_golf_belacres` 시스템 |
 
-**스크래핑 규칙:**
+**스크래핑 규칙 (Bridges):**
 - `page.goto(booking_url)` (Date 파라미터 추가 금지 — Angular가 무시함)
 - `response` 이벤트로 `/onlineresapi/.../TeeTimes?searchDate=...` JSON 캡처
 - 캘린더에서 target_date 클릭 (`span.day-background-upper.is-visible:not(.is-disabled)`)
@@ -88,6 +88,15 @@ URL이 바뀌면 이 파일과 [config.py](config.py)를 같이 업데이트.
   - 최대 3회 이동
 - 클릭 후 새 API 응답 대기 (~20초)
 - 마지막 캡처(`captured[-1]`)에서 `content[].startTime` + `shItemPrices[0].displayPrice` 추출
+
+**스크래핑 규칙 (Bel Acres — `cps_golf_belacres` 시스템):**
+- Cloudflare Bot Fight Mode가 `RegisterTransactionId` POST를 Playwright 내부에서도 403 차단
+- FlareSolverr (nodriver-based headless Chrome, GitHub Actions service)로 CF bypass:
+  1. FlareSolverr GET `https://belacres.cps.golf/` → `cf_clearance` cookie + User-Agent
+  2. POST `/identityapi/myconnect/token/short` (multipart, `client_id=onlinereswebshortlived`) → token
+  3. POST `/onlineres/.../RegisterTransactionId?webSiteId=b73559ce-2c3a-41f8-ac53-08da31cff8d4` → tx_id
+  4. GET `/onlineres/.../TeeTimes?webSiteId=...&courseIds=1&transactionId=tx_id&...` → slots
+- 스크래퍼: `scrapers/belacres.py`, FLARESOLVERR_URL 환경변수 (`http://localhost:8191/v1`)
 
 ---
 

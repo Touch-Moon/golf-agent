@@ -24,7 +24,21 @@ concurrency:
 jobs:
   scrape:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
+
+    services:
+      flaresolverr:
+        image: ghcr.io/flaresolverr/flaresolverr:latest
+        ports:
+          - 8191:8191
+        env:
+          LOG_LEVEL: warn
+        options: >-
+          --health-cmd "curl -sf http://localhost:8191/health || exit 1"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 6
+          --health-start-period 20s
 
     steps:
       - name: Checkout
@@ -86,6 +100,7 @@ jobs:
           WEBAPP_URL:         ${{ secrets.WEBAPP_URL }}
           NOTION_TOKEN:       ${{ secrets.NOTION_TOKEN }}
           NOTION_TOKEN_V2:    ${{ secrets.NOTION_TOKEN_V2 }}
+          FLARESOLVERR_URL:   http://localhost:8191/v1
           TZ: America/Winnipeg
         run: |
           mkdir -p logs
