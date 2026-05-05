@@ -1,78 +1,37 @@
 """
-Bel Acres Golf and Country Club — CPS Golf API via FlareSolverr + curl-cffi.
+Bel Acres Golf and Country Club — Playwright + FlareSolverr CF bypass.
 
-Cloudflare Bot Fight Mode blocks RegisterTransactionId POST even inside Playwright.
-Two-layer bypass:
-  1. FlareSolverr (nodriver headless Chrome) → cf_clearance cookie + User-Agent + HTML
-  2. curl-cffi (Chrome TLS impersonation) + those cookies → CF sees matching fingerprint
+Cloudflare Bot Fight Mode blocks direct API calls and Playwright by default.
+Strategy: FlareSolverr (nodriver Chrome) solves CF challenge → cf_clearance cookie.
+Inject that cookie into the shared Playwright browser → Angular SPA loads normally →
+intercept TeeTimes API response (same pattern as cps_golf.py for Bridges).
 
-componentid header: Bel Acres' newer CPS Golf version requires this. Value is extracted
-from the Angular JS bundle served by FlareSolverr; falls back to webSiteId.
-
-API flow:
-  1. FlareSolverr GET https://belacres.cps.golf/ → cf_clearance + UA + page HTML
-  2. Extract componentid from Angular JS bundle
-  3. std_requests POST /identityapi/myconnect/token/short → Bearer token
-  4. curl-cffi POST /onlineres/.../RegisterTransactionId (with componentid) → transactionId
-  5. curl-cffi GET  /onlineres/.../TeeTimes → slots
+This avoids the componentid header problem entirely: Angular sets it automatically.
 """
+import asyncio
 import os
-import re
 import time
-import uuid
 import requests as std_requests
 from datetime import date
 
-from scrapers.base import parse_time, make_slot
 from logger import log
+from scrapers.base import parse_time, make_slot
 
 _BASE = "https://belacres.cps.golf"
-_WEB_SITE_ID = "b73559ce-2c3a-41f8-ac53-08da31cff8d4"
-_COURSE_ID = 1
+_BOOKING_PAGE = _BASE + "/onlineresweb/search-teetime"
 _FLARESOLVERR = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
-_IMPERSONATE = "chrome131"
 
-
-def _find_component_id(html: str, session) -> str:
-    """
-    Angular 번들 JS에서 componentid 값 추출.
-    CPS Golf newer versions require this header on RegisterTransactionId.
-    """
-    # Find JS bundle URLs from HTML script tags
-    js_urls = re.findall(r'src=["\']([^"\']*(?:main|vendor|runtime)[^"\']*\.js)["\']', html, re.I)
-    if not js_urls:
-        js_urls = re.findall(r'src=["\']([^"\']+\.js)["\']', html, re.I)
-
-    for js_path in js_urls[:5]:
-        full_url = (_BASE + js_path) if js_path.startswith("/") else js_path
-        try:
-            r = session.get(full_url, timeout=20)
-            if r.status_code != 200:
-                continue
-            # Look for componentId or componentid value in minified Angular code
-            text = r.text
-            for pattern in [
-                r'componentId\s*[=:]\s*["\']([^"\']{2,64})["\']',
-                r'componentid\s*[=:]\s*["\']([^"\']{2,64})["\']',
-                r'"componentId"\s*,\s*["\']([^"\']{2,64})["\']',
-                r'headers\[.componentid.\]\s*=\s*["\']([^"\']{2,64})["\']',
-            ]:
-                m = re.search(pattern, text, re.I)
-                if m:
-                    val = m.group(1)
-                    log(f"  [belacres] componentid found in JS: {val}")
-                    return val
-        except Exception:
-            continue
-
-    log(f"  [belacres] componentid not found in JS — falling back to webSiteId")
-    return _WEB_SITE_ID
+_MONTH_NAMES = {
+    "January": 1, "February": 2, "March": 3, "April": 4,
+    "May": 5, "June": 6, "July": 7, "August": 8,
+    "September": 9, "October": 10, "November": 11, "December": 12,
+}
 
 
 async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> list:
     log(f"  [belacres] FlareSolverr at {_FLARESOLVERR}")
 
-    # Step 1: FlareSolverr GET → cf_clearance cookie + User-Agent + HTML
+    # Step 1: FlareSolverr → cf_clearance cookie + User-Agent
     solution = None
     for attempt in range(1, 4):
         try:
@@ -86,7 +45,7 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
             if body.get("status") == "ok":
                 solution = body["solution"]
                 break
-            log(f"  [belacres] FlareSolverr attempt {attempt}: status={body.get('status')}")
+            log(f"  [belacres] FlareSolverr attempt {attempt}: {body.get('status')}")
         except Exception as e:
             log(f"  [belacres] FlareSolverr attempt {attempt} error: {e}")
         if attempt < 3:
@@ -96,101 +55,134 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
         log(f"  [belacres] FlareSolverr unavailable — 0 slots")
         return []
 
-    cf_cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
-    user_agent = solution.get("userAgent", "Mozilla/5.0")
-    html = solution.get("response", "")
-    log(f"  [belacres] CF bypass OK — {len(cf_cookies)} cookies, html={len(html)}B")
+    cf_cookies = solution.get("cookies", [])
+    user_agent = solution.get("userAgent", "")
+    log(f"  [belacres] CF bypass OK — {len(cf_cookies)} cookies")
 
+    # Step 2: Inject CF cookies + User-Agent into shared Playwright browser
+    cookies_to_add = []
+    for c in cf_cookies:
+        domain = c.get("domain", ".belacres.cps.golf")
+        if not domain.startswith("."):
+            domain = "." + domain
+        cookies_to_add.append({
+            "name": c["name"],
+            "value": c["value"],
+            "domain": domain,
+            "path": c.get("path", "/"),
+        })
+    if cookies_to_add:
+        await page.context.add_cookies(cookies_to_add)
+    if user_agent:
+        await page.set_extra_http_headers({"User-Agent": user_agent})
+
+    # Step 3: Intercept TeeTimes API response
+    captured = []
+
+    async def on_response(resp):
+        if "TeeTimes" in resp.url and resp.status == 200:
+            log(f"  [belacres] TeeTimes intercepted ({resp.status})")
+            try:
+                captured.append(await resp.json())
+            except Exception:
+                pass
+
+    page.on("response", on_response)
+
+    # Step 4: Navigate — CF should accept cf_clearance from same IP
     try:
-        from curl_cffi import requests as cf_requests
-    except ImportError:
-        log(f"  [belacres] curl-cffi not installed — 0 slots")
-        return []
-
-    session = cf_requests.Session(impersonate=_IMPERSONATE)
-    session.cookies.update(cf_cookies)
-
-    headers_base = {
-        "User-Agent": user_agent,
-        "Origin": _BASE,
-        "Referer": _BASE + "/onlineresweb/search-teetime",
-        "client-id": "onlineresweb",
-    }
-
-    # Step 2: find componentid from Angular bundle
-    component_id = _find_component_id(html, session)
-
-    # Step 3: token — plain requests works (token endpoint is not CF-blocked)
-    try:
-        tok_resp = std_requests.post(
-            f"{_BASE}/identityapi/myconnect/token/short",
-            files={
-                "client_id": (None, "onlinereswebshortlived"),
-                "scope": (None, "onlineresweb"),
-            },
-            headers={**headers_base, "x-requestid": str(uuid.uuid4())},
-            cookies=cf_cookies,
-            timeout=20,
-        )
-        tok_data = tok_resp.json()
-        token = tok_data.get("access_token")
-        if not token:
-            log(f"  [belacres] token missing — {tok_resp.status_code}: {tok_resp.text[:120]}")
-            return []
-        log(f"  [belacres] token OK ({tok_resp.status_code})")
+        await page.goto(_BOOKING_PAGE, wait_until="domcontentloaded", timeout=40000)
     except Exception as e:
-        log(f"  [belacres] token error: {e}")
+        log(f"  [belacres] goto warn: {e}")
+
+    await asyncio.sleep(5)
+
+    current_url = page.url
+    if "challenge" in current_url or "cloudflare" in current_url.lower():
+        log(f"  [belacres] CF rechallenge detected — cookie injection insufficient")
+        page.remove_listener("response", on_response)
         return []
 
-    auth_headers = {
-        **headers_base,
-        "Authorization": f"Bearer {token}",
-        "x-requestid": str(uuid.uuid4()),
-        "componentid": component_id,
-        "Accept": "application/json",
-    }
+    log(f"  [belacres] page loaded: {current_url[:80]}")
 
-    # Step 4: RegisterTransactionId (curl-cffi — CF-blocked endpoint)
-    try:
-        tx_resp = session.post(
-            f"{_BASE}/onlineres/onlineapi/api/v1/onlinereservation/RegisterTransactionId",
-            params={"webSiteId": _WEB_SITE_ID},
-            headers=auth_headers,
-            timeout=20,
-        )
-        if tx_resp.status_code != 200:
-            log(f"  [belacres] RegisterTransactionId {tx_resp.status_code}: {tx_resp.text[:200]}")
-            return []
-        tx_id = tx_resp.text.strip().strip('"')
-        log(f"  [belacres] tx_id={tx_id[:12]}…")
-    except Exception as e:
-        log(f"  [belacres] RegisterTransactionId error: {e}")
-        return []
+    # Step 5: Click target date in calendar (same logic as cps_golf.py)
+    clicked = await _select_calendar_date(page, target_date)
+    log(f"  [belacres] calendar {'clicked' if clicked else 'click failed'}: {target_date}")
 
-    # Step 5: TeeTimes
-    date_str = target_date.strftime("%Y-%m-%dT00:00:00")
-    try:
-        tt_resp = session.get(
-            f"{_BASE}/onlineres/onlineapi/api/v1/onlinereservation/TeeTimes",
-            params={
-                "webSiteId": _WEB_SITE_ID,
-                "searchDate": date_str,
-                "numberOfPlayers": 4,
-                "numberOfHoles": 18,
-                "courseIds": _COURSE_ID,
-                "transactionId": tx_id,
-            },
-            headers=auth_headers,
-            timeout=20,
-        )
-        log(f"  [belacres] TeeTimes {tt_resp.status_code}")
-        if tt_resp.status_code != 200:
-            log(f"  [belacres] TeeTimes body: {tt_resp.text[:200]}")
-            return []
-        return _parse(tt_resp.json(), cutoff)
-    except Exception as e:
-        log(f"  [belacres] TeeTimes error: {e}")
+    # Wait for TeeTimes response (default date fires 1 response; after click, another)
+    target_count = 2 if clicked else 1
+    for _ in range(20):
+        if len(captured) >= target_count:
+            break
+        await asyncio.sleep(1)
+
+    page.remove_listener("response", on_response)
+    log(f"  [belacres] {len(captured)} TeeTimes response(s) captured")
+
+    if not captured:
         return []
+    return _parse(captured[-1], cutoff)
+
+
+async def _select_calendar_date(page, target_date: date) -> bool:
+    """Click target_date in CPS Golf Angular calendar. Same logic as cps_golf.py."""
+    for _ in range(3):
+        displayed_month, displayed_year = None, None
+        try:
+            month_text = await page.evaluate("""
+                () => {
+                    const walker = document.createTreeWalker(
+                        document.body, NodeFilter.SHOW_TEXT
+                    );
+                    let node;
+                    while ((node = walker.nextNode())) {
+                        const t = node.textContent.trim();
+                        if (/^[A-Z][a-z]+ \\d{4}$/.test(t)) return t;
+                    }
+                    return null;
+                }
+            """)
+            if month_text:
+                parts = month_text.split()
+                displayed_month = _MONTH_NAMES.get(parts[0])
+                displayed_year = int(parts[1])
+        except Exception:
+            pass
+
+        if displayed_month is None or (
+            displayed_month == target_date.month and displayed_year == target_date.year
+        ):
+            day_str = str(target_date.day)
+            spans = await page.query_selector_all("span.day-background-upper")
+            for span in spans:
+                cls = await span.get_attribute("class") or ""
+                txt = (await span.inner_text()).strip()
+                if (
+                    txt == day_str
+                    and "is-visible" in cls
+                    and "is-disabled" not in cls
+                    and "is-prev-month" not in cls
+                    and "is-next-month" not in cls
+                ):
+                    await span.click()
+                    return True
+            return False
+
+        # Advance to next month
+        buttons = await page.query_selector_all("button.mat-raised-button")
+        moved = False
+        for btn in buttons:
+            txt = (await btn.inner_text()).strip()
+            cls = await btn.get_attribute("class") or ""
+            if ">" in txt and "mat-button-disabled" not in cls:
+                await btn.click()
+                await asyncio.sleep(1)
+                moved = True
+                break
+        if not moved:
+            break
+
+    return False
 
 
 def _parse(data: dict, cutoff: tuple) -> list:
