@@ -230,22 +230,13 @@ def _parse_results(body: str) -> list:
 async def _scrape_all_times_landing(page, target_date: date, cutoff: tuple) -> list:
     """
     WebBookingAllTimesLanding 인터페이스 파싱.
-    날짜 탭(changeDate) + '18 Holes' 필터 클릭 후 body 텍스트에서 시간 파싱.
+    날짜 탭(changeDate) + 'All' 필터 클릭 후 body 텍스트에서 시간 파싱.
+    'All' 탭은 18홀/9홀 모두 표시 — 'Lorette'처럼 토요일에 9홀만 가용한 날도 슬롯이 잡힘.
     """
     date_str = target_date.strftime("%Y-%m-%d")
     log(f"  [tee_on:AllTimes] {date_str}")
 
-    # "18 Holes" 탭 먼저 클릭
-    holes_link = await page.query_selector("a:has-text('18 Holes')")
-    if holes_link:
-        await holes_link.click()
-        await page.wait_for_load_state("networkidle", timeout=10000)
-        await asyncio.sleep(1)
-        log("  [tee_on:AllTimes] '18 Holes' clicked")
-    else:
-        log("  [tee_on:AllTimes] '18 Holes' tab not found — continuing")
-
-    # 날짜 탭 클릭 — changeDate('YYYY-MM-DD') 형식
+    # 1) 날짜 탭 먼저 클릭 — changeDate('YYYY-MM-DD') 형식
     date_link = await page.query_selector(f"a[href*=\"changeDate('{date_str}')\"]")
     if date_link:
         await date_link.click()
@@ -254,6 +245,27 @@ async def _scrape_all_times_landing(page, target_date: date, cutoff: tuple) -> l
         log(f"  [tee_on:AllTimes] date tab {date_str} clicked")
     else:
         log(f"  [tee_on:AllTimes] date tab {date_str} not found — using default date")
+
+    # 2) 홀 필터를 'All'로 — 18/9홀 모두 노출. 'All' 텍스트 정확 일치 요소로 한정.
+    all_handle = await page.evaluate_handle("""() => {
+        const els = document.querySelectorAll('a, button');
+        for (const el of els) {
+            const t = (el.textContent || '').trim();
+            if (t === 'All') return el;
+        }
+        return null;
+    }""")
+    all_el = all_handle.as_element()
+    if all_el:
+        try:
+            await all_el.click()
+            await page.wait_for_load_state("networkidle", timeout=10000)
+            await asyncio.sleep(1)
+            log("  [tee_on:AllTimes] 'All' filter clicked")
+        except Exception as e:
+            log(f"  [tee_on:AllTimes] 'All' click failed: {e}")
+    else:
+        log("  [tee_on:AllTimes] 'All' filter not found — using default view")
 
     body = await page.inner_text("body")
     raw = _parse_results(body)
