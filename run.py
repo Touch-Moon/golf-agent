@@ -23,7 +23,7 @@ from playwright.async_api import async_playwright
 import config as cfg
 from season import calc_season, get_target_date
 from logger import log, write_logs
-from telegram import send_telegram
+from telegram import send_telegram, poll_date_request
 from webapp import import_to_webapp
 from message import build_message
 from scrapers import SCRAPERS
@@ -67,6 +67,14 @@ def normalize_name(s: str) -> str:
 def is_duplicate(name_a: str, name_b: str) -> bool:
     a, b = normalize_name(name_a), normalize_name(name_b)
     return a == b or a in b or b in a
+
+
+def slot_status(slots: list) -> str:
+    if not slots:
+        return "red"
+    if any(s["time"] < "12:00" for s in slots):
+        return "green"
+    return "afternoon"
 
 
 def find_consecutive_slots(slots: list, team_count: int, course_name: str) -> list:
@@ -115,7 +123,7 @@ async def crawl_individual(page, course: dict, target: date) -> dict:
             return {
                 "name":              name,
                 "source":            "individual",
-                "status":            "green" if slots else "red",
+                "status":            slot_status(slots),
                 "slots":             slots,
                 "fallback_price":    course.get("fallback_price"),
                 "distance_km":       course.get("distance_km"),
@@ -249,7 +257,15 @@ async def main():
 
     today  = date.today()
     season = calc_season(today)
-    target = get_target_date(today)
+
+    # 텔레그램에서 특정 날짜 요청 확인 (없으면 이번 주 토요일)
+    requested_date = None
+    if not dry_run and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        requested_date = poll_date_request(TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
+    target = requested_date if requested_date else get_target_date(today)
+    if requested_date:
+        log(f"Telegram 요청 날짜 사용: {target}")
+
     log(f"Golf Agent v4 | Today={today} | Target={target} | Teams={team_count}")
     log(f"Season: {season}")
 

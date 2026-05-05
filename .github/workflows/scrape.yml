@@ -13,8 +13,8 @@ name: Golf Tee Time Scrape
 
 on:
   schedule:
-    - cron: '50 12 * * 1-5'   # CDT path
-    - cron: '50 13 * * 1-5'   # CST path
+    - cron: '50 12 * * *'   # CDT path — 매일 Winnipeg 07:50
+    - cron: '50 13 * * *'   # CST path — 매일 Winnipeg 07:50
   workflow_dispatch:           # manual trigger from the Actions tab
 
 concurrency:

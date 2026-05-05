@@ -27,8 +27,6 @@ def calc_season(today: date) -> dict:
 
 
 def get_target_date(today: date) -> date:
-    """이번 주 토요일을 반환 (오늘이 토요일이면 다음 주 토요일)."""
+    """이번 주 토요일을 반환 (오늘이 토요일이면 오늘, 일요일이면 다음 주 토요일)."""
     days_until_saturday = (5 - today.weekday()) % 7
-    if days_until_saturday == 0:
-        days_until_saturday = 7
     return today + timedelta(days=days_until_saturday)
