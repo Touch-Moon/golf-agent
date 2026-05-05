@@ -52,8 +52,11 @@ jobs:
           MIN=$(TZ=America/Winnipeg date +%M)
           TOTAL=$((10#$HOUR * 60 + 10#$MIN))
           echo "Winnipeg local time: ${HOUR}:${MIN} (total ${TOTAL} min)"
-          # Run if Winnipeg time is between 07:30 and 09:00
-          if [ $TOTAL -ge 450 ] && [ $TOTAL -le 540 ]; then
+          # workflow_dispatch (manual) bypasses the time window
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Manual dispatch — running scraper regardless of time window."
+          elif [ $TOTAL -ge 450 ] && [ $TOTAL -le 540 ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Within 07:30–09:00 Winnipeg window — running scraper."
           else
@@ -61,27 +64,8 @@ jobs:
             echo "::notice::Skipped — outside Winnipeg 07:30–09:00 window."
           fi
 
-      - name: Debug Telegram secrets (TEMP — remove after verify)
-        if: github.event_name == 'workflow_dispatch'
-        env:
-          T: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          C: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          echo "token length: ${#T}"
-          echo "chat_id length: ${#C}"
-          echo "token first/last 4: ${T:0:4}…${T: -4}"
-          echo "chat_id: ${C:0:2}…${C: -2}"
-          echo "--- getMe ---"
-          curl -sS "https://api.telegram.org/bot${T}/getMe" || true
-          echo
-          echo "--- sendMessage ---"
-          curl -sS -X POST "https://api.telegram.org/bot${T}/sendMessage" \
-            -d "chat_id=${C}" \
-            -d "text=debug from workflow $(date -u +%H:%M:%S)" || true
-          echo
-
       - name: Run scraper
-        if: steps.guard.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        if: steps.guard.outputs.run == 'true'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
