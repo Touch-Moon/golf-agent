@@ -29,6 +29,8 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
     async def on_response(resp):
         if "TeeTimes" in resp.url and resp.status == 200:
             log(f"  [cps_golf] API hit: {resp.url[resp.url.find('searchDate='):resp.url.find('searchDate=')+28]}")
+            req_headers = resp.request.headers
+            log(f"  [cps_golf] req headers: componentid={req_headers.get('componentid','—')} client-id={req_headers.get('client-id','—')} x-requestid={req_headers.get('x-requestid','—')[:8] if req_headers.get('x-requestid') else '—'}")
             try:
                 captured.append(await resp.json())
             except Exception:
