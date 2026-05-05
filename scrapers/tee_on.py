@@ -5,14 +5,14 @@ Courses: River Oaks, Lorette, Southside, Windsor Park, Larters
 Flow (ComboLanding URL):
   1) ComboLanding 방문 → "Public Enter Here" 클릭
   2) WebBookingSearchSteps 폼 채우기 (Date, Time, Holes, Players)
-  3) form.submit() → ALTCHA 자동 해결 → WebBookingSearchResults 파싱
+  3) form.submit() → WebBookingSearchResults 파싱
 
 Flow (WebBookingSearchSteps URL):
   1) WebBookingSearchSteps 직접 방문 (Public Enter Here 클릭 없이)
   2) 폼 채우기 → 동일
 
-Time format on results page: "10:08AM" (no space before AM/PM)
-Price is NOT shown in search results → caller uses fallback_price.
+Results page format: "9:16AM\n$56.70\nGF S/S/H"
+각 검색은 2개씩 반환 → 마지막 슬롯 직후 시간으로 다음 검색.
 """
 import asyncio
 import re
@@ -56,38 +56,61 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
             log(f"  [tee_on] 날짜 {date_value} 옵션 없음 (가능: {date_options})")
             return []
 
-        # 4) SearchTime 옵션 가져오기 (06:00 부터 cutoff 까지)
+        # 4) SearchTime 옵션 가져오기
         time_options = await page.eval_on_selector_all(
             "select#SearchTime option", "opts => opts.map(o => o.value).filter(v => v)"
         )
 
-        # 5) 반복 검색
+        # 5) 반복 검색 — 마지막 발견 슬롯 직후 시간으로 점프
         all_slots: dict = {}
-        max_iterations = 12  # 최대 12회 (≈ 24개 슬롯 예상)
+        cutoff_min = cutoff[0] * 60 + cutoff[1]
+        search_from_min = 0  # 처음엔 가장 이른 옵션부터
+        empty_streak = 0     # 연속 빈 응답 카운트 (gap-skipping용)
 
-        for iter_idx, search_time in enumerate(_iter_search_times(time_options, cutoff, max_iterations)):
-            new_slots = await _search_once(page, booking_url, date_value, search_time)
-            if not new_slots:
-                # 첫 시도 실패 시 종료, 그 외엔 그냥 끝
-                if iter_idx == 0:
-                    log("  [tee_on] 결과 없음")
+        for iter_idx in range(80):  # 안전 상한 (gap skip 여유 확보)
+            search_time = _pick_search_time(time_options, search_from_min, cutoff_min)
+            if not search_time:
                 break
 
-            added = 0
+            new_slots = await _search_once(page, booking_url, date_value, search_time)
+            if not new_slots:
+                if iter_idx == 0:
+                    log("  [tee_on] 결과 없음")
+                    break
+                # 빈 응답 = 알고리즘이 SearchTime drop-down 옵션 간격에 걸려
+                # 직후 슬롯을 놓쳤거나, 그 시간대만 일시적으로 가용 슬롯이 없는 상태.
+                # +30분 점프 후 두 번까지 더 시도하고 그래도 빈 응답이면 종료.
+                empty_streak += 1
+                if empty_streak >= 2:
+                    break
+                search_from_min += 30
+                continue
+            empty_streak = 0
+
+            any_new = False
+            latest_min = search_from_min
             for s in new_slots:
                 if (s["hour"], s["minute"]) >= cutoff:
                     continue
                 key = s["time"]
                 if key not in all_slots:
                     all_slots[key] = s
-                    added += 1
+                    any_new = True
+                slot_min = s["hour"] * 60 + s["minute"]
+                if slot_min > latest_min:
+                    latest_min = slot_min
 
-            if added == 0:
-                # 더 이상 새 슬롯 없음 → 종료
-                break
+            # 다음 검색은 마지막 슬롯 직후. 새 슬롯 없으면 +30분 점프해 다음 가용 시간대로.
+            if any_new:
+                search_from_min = latest_min + 8
+            else:
+                search_from_min = max(latest_min, search_from_min) + 30
+                empty_streak += 1
+                if empty_streak >= 2:
+                    break
 
         return [
-            {"time": s["time"], "price": None, "is_hot_deal": False}
+            {"time": s["time"], "price": s.get("price"), "is_hot_deal": False}
             for s in sorted(all_slots.values(), key=lambda x: x["time"])
         ]
 
@@ -96,11 +119,8 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
         return []
 
 
-def _iter_search_times(time_options: list, cutoff: tuple, max_iter: int):
-    """SearchTime 옵션을 30분 간격으로 건너뛰며 yield."""
-    cutoff_min = cutoff[0] * 60 + cutoff[1]
-    last_yielded = -999
-    count = 0
+def _pick_search_time(time_options: list, from_min: int, cutoff_min: int) -> str | None:
+    """from_min 이후 가장 가까운 SearchTime 옵션 반환."""
     for opt in time_options:
         try:
             h, m = map(int, opt.split(":"))
@@ -109,13 +129,9 @@ def _iter_search_times(time_options: list, cutoff: tuple, max_iter: int):
         cur = h * 60 + m
         if cur >= cutoff_min:
             break
-        if cur - last_yielded < 30:
-            continue  # 30분 간격으로만
-        yield opt
-        last_yielded = cur
-        count += 1
-        if count >= max_iter:
-            break
+        if cur >= from_min:
+            return opt
+    return None
 
 
 async def _search_once(page, booking_url: str, date_value: str, search_time: str) -> list:
@@ -155,7 +171,7 @@ async def _search_once(page, booking_url: str, date_value: str, search_time: str
 
     await page.evaluate("""
         document.getElementById('toggle-18').checked = true;
-        document.getElementById('toggle-1').checked  = true;
+        document.getElementById('toggle-4').checked  = true;
         document.getElementById('form').submit();
     """)
 
@@ -171,12 +187,13 @@ async def _search_once(page, booking_url: str, date_value: str, search_time: str
 
 
 def _parse_results(body: str) -> list:
-    """결과 페이지 텍스트에서 슬롯 추출 (검색 폼의 시간 옵션은 제외)."""
-    # 검색 폼의 시간 옵션 (06:00, 06:15 등) 제거
+    """결과 페이지 텍스트에서 시간 + 가격 추출."""
+    # 검색 폼의 시간 옵션 (07:00, 07:15 등 HH:MM without AM/PM) 제거
     body_filtered = re.sub(r'\b\d{1,2}:\d{2}\s*(?![AaPp][Mm])', '', body)
 
     slots = []
     seen = set()
+    # 시간 매치 후 100자 이내에서 가격($XX.XX) 탐색
     for m in re.finditer(r'\b(\d{1,2}:\d{2}\s*[AaPp][Mm])\b', body_filtered):
         time_str = m.group(1).strip()
         dt = parse_time(time_str)
@@ -186,10 +203,17 @@ def _parse_results(body: str) -> list:
         if key in seen:
             continue
         seen.add(key)
+
+        # 이 시간 직후 100자 안에서 가격 찾기
+        after = body_filtered[m.end(): m.end() + 100]
+        price_m = re.search(r'\$(\d+(?:\.\d{2})?)', after)
+        price = float(price_m.group(1)) if price_m else None
+
         slots.append({
             "time":   key,
             "hour":   dt.hour,
             "minute": dt.minute,
+            "price":  price,
         })
     return slots
 
