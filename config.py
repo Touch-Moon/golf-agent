@@ -50,7 +50,7 @@ INDIVIDUAL_COURSES = [
         "phone": "(204) 878-2172",
         "system": "tee_on",
         "distance_km": 22,
-        "holes": 9,
+        "holes": 18,
         "fallback_price": 73,
         "cart_mandatory": False,
         "early_bird_price": 41,

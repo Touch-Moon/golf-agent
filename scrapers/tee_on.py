@@ -2,12 +2,17 @@
 Tee-On booking system scraper.
 Courses: River Oaks, Lorette, Southside, Windsor Park, Larters
 
-Flow (ComboLanding URL):
+Flow A (ComboLanding → WebBookingSearchSteps):
   1) ComboLanding 방문 → "Public Enter Here" 클릭
   2) WebBookingSearchSteps 폼 채우기 (Date, Time, Holes, Players)
   3) form.submit() → WebBookingSearchResults 파싱
 
-Flow (WebBookingSearchSteps URL):
+Flow B (ComboLanding → WebBookingAllTimesLanding):
+  1) ComboLanding 방문 → "Public Enter Here" 클릭
+  2) 날짜 탭 클릭 + "18 Holes" 탭 클릭
+  3) 페이지 바디 텍스트에서 시간 파싱
+
+Flow C (WebBookingSearchSteps URL):
   1) WebBookingSearchSteps 직접 방문 (Public Enter Here 클릭 없이)
   2) 폼 채우기 → 동일
 
@@ -38,7 +43,7 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
         await asyncio.sleep(1)
 
         # 2) "Public Enter Here" 클릭 (ComboLanding URL에서만 필요)
-        if "WebBookingSearchSteps" not in booking_url:
+        if "WebBookingSearchSteps" not in booking_url and "WebBookingAllTimesLanding" not in booking_url:
             pub_link = await page.query_selector("a:has-text('Public Enter Here')")
             if not pub_link:
                 log("  [tee_on] 'Public Enter Here' 링크를 찾지 못함")
@@ -47,7 +52,11 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
             await page.wait_for_load_state("networkidle", timeout=15000)
             await asyncio.sleep(1)
 
-        # 3) Date 검증
+        # 3) WebBookingAllTimesLanding 감지 → 별도 파싱 흐름
+        if "WebBookingAllTimesLanding" in page.url:
+            return await _scrape_all_times_landing(page, target_date, cutoff)
+
+        # 5) Date 검증
         date_value = target_date.strftime("%Y-%m-%d")
         date_options = await page.eval_on_selector_all(
             "select#Date option", "opts => opts.map(o => o.value)"
@@ -56,12 +65,12 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
             log(f"  [tee_on] 날짜 {date_value} 옵션 없음 (가능: {date_options})")
             return []
 
-        # 4) SearchTime 옵션 가져오기
+        # 6) SearchTime 옵션 가져오기
         time_options = await page.eval_on_selector_all(
             "select#SearchTime option", "opts => opts.map(o => o.value).filter(v => v)"
         )
 
-        # 5) 반복 검색 — 마지막 발견 슬롯 직후 시간으로 점프
+        # 7) 반복 검색 — 마지막 발견 슬롯 직후 시간으로 점프
         all_slots: dict = {}
         cutoff_min = cutoff[0] * 60 + cutoff[1]
         search_from_min = 0  # 처음엔 가장 이른 옵션부터
@@ -215,6 +224,46 @@ def _parse_results(body: str) -> list:
             "minute": dt.minute,
             "price":  price,
         })
+    return slots
+
+
+async def _scrape_all_times_landing(page, target_date: date, cutoff: tuple) -> list:
+    """
+    WebBookingAllTimesLanding 인터페이스 파싱.
+    날짜 탭(changeDate) + '18 Holes' 필터 클릭 후 body 텍스트에서 시간 파싱.
+    """
+    date_str = target_date.strftime("%Y-%m-%d")
+    log(f"  [tee_on:AllTimes] {date_str}")
+
+    # "18 Holes" 탭 먼저 클릭
+    holes_link = await page.query_selector("a:has-text('18 Holes')")
+    if holes_link:
+        await holes_link.click()
+        await page.wait_for_load_state("networkidle", timeout=10000)
+        await asyncio.sleep(1)
+        log("  [tee_on:AllTimes] '18 Holes' clicked")
+    else:
+        log("  [tee_on:AllTimes] '18 Holes' tab not found — continuing")
+
+    # 날짜 탭 클릭 — changeDate('YYYY-MM-DD') 형식
+    date_link = await page.query_selector(f"a[href*=\"changeDate('{date_str}')\"]")
+    if date_link:
+        await date_link.click()
+        await page.wait_for_load_state("networkidle", timeout=10000)
+        await asyncio.sleep(1)
+        log(f"  [tee_on:AllTimes] date tab {date_str} clicked")
+    else:
+        log(f"  [tee_on:AllTimes] date tab {date_str} not found — using default date")
+
+    body = await page.inner_text("body")
+    raw = _parse_results(body)
+
+    slots = [
+        {"time": s["time"], "price": s.get("price"), "is_hot_deal": False}
+        for s in raw
+        if (s["hour"], s["minute"]) < cutoff
+    ]
+    log(f"  [tee_on:AllTimes] {len(slots)} slots within cutoff")
     return slots
 
 
