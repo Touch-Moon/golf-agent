@@ -78,6 +78,36 @@ jobs:
           mkdir -p logs
           python run.py
 
+      - name: Push latest.json to site repo
+        if: success() && steps.guard.outputs.run == 'true'
+        env:
+          SITE_REPO_TOKEN: ${{ secrets.SITE_REPO_TOKEN }}
+        run: |
+          LOGFILE=$(ls -t logs/run_*.json 2>/dev/null | head -1)
+          if [ -z "$LOGFILE" ]; then
+            echo "::warning::No run_YYYY-MM-DD.json under logs/, skip site update"
+            exit 0
+          fi
+          echo "Found log: $LOGFILE"
+
+          git clone --depth 1 \
+            "https://x-access-token:${SITE_REPO_TOKEN}@github.com/Touch-Moon/good-morning-golf.git" \
+            site
+          cd site
+          git config user.email "actions@github.com"
+          git config user.name "golf-agent[bot]"
+
+          cp "../$LOGFILE" data/latest.json
+          git add data/latest.json
+          if git diff --cached --quiet; then
+            echo "::notice::data/latest.json unchanged — nothing to push"
+          else
+            DATE=$(basename "$LOGFILE" .json | cut -c5-)
+            git commit -m "data: refresh latest.json from golf-agent run ($DATE)"
+            git push origin main
+            echo "::notice::Pushed updated latest.json (target_date $DATE)"
+          fi
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
