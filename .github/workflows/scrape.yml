@@ -1,0 +1,85 @@
+name: Golf Tee Time Scrape
+
+# ──────────────────────────────────────────────────────────────
+# Schedule: Mon–Fri, Winnipeg 08:00
+#   GitHub Actions cron is UTC-only, so we register both DST and
+#   non-DST trigger times and let the in-job guard decide whether
+#   to actually run. The runner is also typically queued 5–15 min
+#   late, so we trigger 10 min early.
+#
+#   CDT (summer, UTC-5):  Winnipeg 07:50 = UTC 12:50
+#   CST (winter, UTC-6):  Winnipeg 07:50 = UTC 13:50
+# ──────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    - cron: '50 12 * * 1-5'   # CDT path
+    - cron: '50 13 * * 1-5'   # CST path
+  workflow_dispatch:           # manual trigger from the Actions tab
+
+concurrency:
+  group: golf-scrape
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install Playwright Chromium
+        run: |
+          python -m playwright install --with-deps chromium
+
+      - name: Winnipeg-time window guard (handles DST automatically)
+        id: guard
+        run: |
+          HOUR=$(TZ=America/Winnipeg date +%H)
+          MIN=$(TZ=America/Winnipeg date +%M)
+          TOTAL=$((10#$HOUR * 60 + 10#$MIN))
+          echo "Winnipeg local time: ${HOUR}:${MIN} (total ${TOTAL} min)"
+          # Run if Winnipeg time is between 07:30 and 09:00
+          if [ $TOTAL -ge 450 ] && [ $TOTAL -le 540 ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Within 07:30–09:00 Winnipeg window — running scraper."
+          else
+            echo "run=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipped — outside Winnipeg 07:30–09:00 window."
+          fi
+
+      - name: Run scraper
+        if: steps.guard.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID:   ${{ secrets.TELEGRAM_CHAT_ID }}
+          API_SECRET_KEY:     ${{ secrets.API_SECRET_KEY }}
+          WEBAPP_URL:         ${{ secrets.WEBAPP_URL }}
+          NOTION_TOKEN:       ${{ secrets.NOTION_TOKEN }}
+          NOTION_TOKEN_V2:    ${{ secrets.NOTION_TOKEN_V2 }}
+          TZ: America/Winnipeg
+        run: |
+          mkdir -p logs
+          python run.py
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scrape-logs-${{ github.run_id }}
+          path: logs/
+          retention-days: 30
+          if-no-files-found: ignore
