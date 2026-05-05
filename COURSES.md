@@ -58,11 +58,14 @@ URL이 바뀌면 이 파일과 [config.py](config.py)를 같이 업데이트.
 
 **스크래핑 규칙:**
 - URL: `{booking_url}?date={target_date}&golfers=4&holes=18&max=999999`
-- `page.goto()` + `networkidle` 대기
+- `page.goto(wait_until="domcontentloaded")` — `networkidle`은 SPA에서 안 떨어짐
 - `response` 이벤트로 JSON 응답 캡처 (URL에 `tee/slot/time/booking/avail` 포함)
-- JSON 우선: `teeTimes[]` / `slots[]` / `times[]` 안의 `time` + `price`
-- DOM 폴백: `[class*='tee-time']`, `[class*='time-slot']`, `[class*='slot']`
-- body 텍스트 폴백 (마지막 수단)
+- 실제 API 엔드포인트: `phx-api-be-east-1b.kenna.io/v2/tee-times?date=X&facilityIds=Y`
+- JSON 구조: `list[1]` of facility wrappers, 각 `wrapper.teetimes[i]`에 슬롯
+  - `teetime`: ISO UTC 타임스탬프 → America/Winnipeg 변환 필수
+  - `rates[0].promotion.greenFeeCart` 또는 `rates[0].greenFeeCart` (cents 단위)
+  - `rates[0].showAsHotDeal`: bool
+- DOM 폴백 / body 텍스트 폴백 (JSON 캡처 실패 시)
 
 ---
 
@@ -72,10 +75,10 @@ URL이 바뀌면 이 파일과 [config.py](config.py)를 같이 업데이트.
 
 스크래퍼: [scrapers/cps_golf.py](scrapers/cps_golf.py)
 
-| 코스 | 예약 URL |
-|---|---|
-| Bridges Golf Course | https://bridgesgccan.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=0&TeeOffTimeMax=23.999722222222225 |
-| Bel Acres Golf and Country Club | https://belacres.cps.golf/ |
+| 코스 | 예약 URL | 상태 |
+|---|---|---|
+| Bridges Golf Course | https://bridgesgccan.cps.golf/onlineresweb/search-teetime?TeeOffTimeMin=0&TeeOffTimeMax=23.999722222222225 | ✓ 동작 |
+| Bel Acres Golf and Country Club | https://belacres.cps.golf/ | ⚠️ 미해결 — Cloudflare 통과 후 코스 선택 UI에 멈춤 (`searchTeetime.noCourseSelected` 상태). Angular SPA가 추가 인터랙션 없이 TeeTimes API 호출 안 함 |
 
 **스크래핑 규칙:**
 - `page.goto(booking_url)` (Date 파라미터 추가 금지 — Angular가 무시함)
