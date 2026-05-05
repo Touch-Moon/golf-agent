@@ -61,6 +61,25 @@ jobs:
             echo "::notice::Skipped — outside Winnipeg 07:30–09:00 window."
           fi
 
+      - name: Debug Telegram secrets (TEMP — remove after verify)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          T: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          C: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          echo "token length: ${#T}"
+          echo "chat_id length: ${#C}"
+          echo "token first/last 4: ${T:0:4}…${T: -4}"
+          echo "chat_id: ${C:0:2}…${C: -2}"
+          echo "--- getMe ---"
+          curl -sS "https://api.telegram.org/bot${T}/getMe" || true
+          echo
+          echo "--- sendMessage ---"
+          curl -sS -X POST "https://api.telegram.org/bot${T}/sendMessage" \
+            -d "chat_id=${C}" \
+            -d "text=debug from workflow $(date -u +%H:%M:%S)" || true
+          echo
+
       - name: Run scraper
         if: steps.guard.outputs.run == 'true' || github.event_name == 'workflow_dispatch'
         env:
