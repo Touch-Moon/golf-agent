@@ -1,21 +1,21 @@
 """
-Bel Acres Golf and Country Club — CPS Golf API via FlareSolverr CF bypass.
+Bel Acres Golf and Country Club — CPS Golf API via FlareSolverr + curl-cffi.
 
-Cloudflare Bot Fight Mode on belacres.cps.golf blocks RegisterTransactionId POST
-even inside Playwright. Fix: FlareSolverr (nodriver-based headless Chrome) solves
-the CF JS challenge and returns cf_clearance + User-Agent. Subsequent API calls
-from the same IP with those credentials bypass CF.
+Cloudflare Bot Fight Mode blocks RegisterTransactionId POST even inside Playwright.
+Two-layer bypass:
+  1. FlareSolverr (nodriver headless Chrome) → cf_clearance cookie + User-Agent
+  2. curl-cffi (Chrome TLS impersonation) + those cookies → CF sees matching fingerprint
 
 API flow:
-  1. FlareSolverr GET https://belacres.cps.golf/ → cf_clearance cookie + UA
-  2. POST /identityapi/myconnect/token/short → Bearer token
-  3. POST /onlineres/.../RegisterTransactionId → transactionId
-  4. GET  /onlineres/.../TeeTimes → slots
+  1. FlareSolverr GET https://belacres.cps.golf/ → cf_clearance + UA
+  2. curl-cffi POST /identityapi/myconnect/token/short → Bearer token
+  3. curl-cffi POST /onlineres/.../RegisterTransactionId → transactionId
+  4. curl-cffi GET  /onlineres/.../TeeTimes → slots
 """
 import os
 import time
 import uuid
-import requests
+import requests as std_requests
 from datetime import date
 
 from scrapers.base import parse_time, make_slot
@@ -25,16 +25,18 @@ _BASE = "https://belacres.cps.golf"
 _WEB_SITE_ID = "b73559ce-2c3a-41f8-ac53-08da31cff8d4"
 _COURSE_ID = 1
 _FLARESOLVERR = os.getenv("FLARESOLVERR_URL", "http://localhost:8191/v1")
+# Match the Chrome version FlareSolverr uses (nodriver, ~Chrome 131+)
+_IMPERSONATE = "chrome131"
 
 
 async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> list:
     log(f"  [belacres] FlareSolverr at {_FLARESOLVERR}")
 
-    # FlareSolverr may still be initializing — retry up to 3×
+    # Step 1: FlareSolverr GET → cf_clearance cookie + User-Agent
     solution = None
     for attempt in range(1, 4):
         try:
-            fs_resp = requests.post(
+            fs_resp = std_requests.post(
                 _FLARESOLVERR,
                 json={"cmd": "request.get", "url": _BASE + "/", "maxTimeout": 60000},
                 timeout=90,
@@ -56,7 +58,17 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
 
     cf_cookies = {c["name"]: c["value"] for c in solution.get("cookies", [])}
     user_agent = solution.get("userAgent", "Mozilla/5.0")
-    log(f"  [belacres] CF bypass OK — {len(cf_cookies)} cookies")
+    log(f"  [belacres] CF bypass OK — {len(cf_cookies)} cookies, Chrome TLS via {_IMPERSONATE}")
+
+    # curl-cffi session: Chrome TLS fingerprint + CF cookies + matching UA
+    try:
+        from curl_cffi import requests as cf_requests
+    except ImportError:
+        log(f"  [belacres] curl-cffi not installed — 0 slots")
+        return []
+
+    session = cf_requests.Session(impersonate=_IMPERSONATE)
+    session.cookies.update(cf_cookies)
 
     headers_base = {
         "User-Agent": user_agent,
@@ -67,14 +79,13 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
 
     # Step 2: token (multipart/form-data)
     try:
-        tok_resp = requests.post(
+        tok_resp = session.post(
             f"{_BASE}/identityapi/myconnect/token/short",
             files={
                 "client_id": (None, "onlinereswebshortlived"),
                 "scope": (None, "onlineresweb"),
             },
             headers={**headers_base, "x-requestid": str(uuid.uuid4())},
-            cookies=cf_cookies,
             timeout=20,
         )
         tok_data = tok_resp.json()
@@ -91,17 +102,15 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
         **headers_base,
         "Authorization": f"Bearer {token}",
         "x-requestid": str(uuid.uuid4()),
-        "Content-Type": "application/json",
         "Accept": "application/json",
     }
 
     # Step 3: RegisterTransactionId
     try:
-        tx_resp = requests.post(
+        tx_resp = session.post(
             f"{_BASE}/onlineres/onlineapi/api/v1/onlinereservation/RegisterTransactionId",
             params={"webSiteId": _WEB_SITE_ID},
             headers=auth_headers,
-            cookies=cf_cookies,
             timeout=20,
         )
         if tx_resp.status_code != 200:
@@ -116,7 +125,7 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
     # Step 4: TeeTimes
     date_str = target_date.strftime("%Y-%m-%dT00:00:00")
     try:
-        tt_resp = requests.get(
+        tt_resp = session.get(
             f"{_BASE}/onlineres/onlineapi/api/v1/onlinereservation/TeeTimes",
             params={
                 "webSiteId": _WEB_SITE_ID,
@@ -127,7 +136,6 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
                 "transactionId": tx_id,
             },
             headers=auth_headers,
-            cookies=cf_cookies,
             timeout=20,
         )
         log(f"  [belacres] TeeTimes {tt_resp.status_code}")
