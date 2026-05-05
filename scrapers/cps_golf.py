@@ -27,10 +27,11 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
     captured: list = []
 
     async def on_response(resp):
-        if "TeeTimes" in resp.url and resp.status == 200:
-            log(f"  [cps_golf] API hit: {resp.url[resp.url.find('searchDate='):resp.url.find('searchDate=')+28]}")
+        if "RegisterTransaction" in resp.url or "TeeTimes" in resp.url:
             req_headers = resp.request.headers
-            log(f"  [cps_golf] req headers: componentid={req_headers.get('componentid','—')} client-id={req_headers.get('client-id','—')} x-requestid={req_headers.get('x-requestid','—')[:8] if req_headers.get('x-requestid') else '—'}")
+            snippet = resp.url.split('?')[0].split('/')[-1]
+            log(f"  [cps_golf] {snippet} status={resp.status} componentid={req_headers.get('componentid','—')} client-id={req_headers.get('client-id','—')}")
+        if "TeeTimes" in resp.url and resp.status == 200:
             try:
                 captured.append(await resp.json())
             except Exception:
