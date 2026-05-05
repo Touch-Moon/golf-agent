@@ -15,8 +15,9 @@ from logger import log
 
 async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> list:
     date_str = target_date.strftime("%Y-%m-%d")
-    # Tee It Up URL 포맷 — 날짜 쿼리 파라미터 또는 해시
-    url = f"{booking_url.rstrip('/')}?date={date_str}"
+    # Tee It Up SPA는 필터 쿼리(holes/golfers/max)가 있어야 슬롯을 노출함.
+    # 필터 없는 bare URL은 빈 상태로 머무름 → 캡처할 JSON 없음.
+    url = f"{booking_url.rstrip('/')}?date={date_str}&golfers=4&holes=18&max=999999"
     log(f"  [teeitup] {url}")
 
     captured: list[dict] = []
