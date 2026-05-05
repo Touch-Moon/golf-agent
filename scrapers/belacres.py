@@ -78,12 +78,13 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
     }
 
     # Step 2: token (multipart/form-data)
+    # curl-cffi uses `multipart=` not `files=` for multipart form data
     try:
         tok_resp = session.post(
             f"{_BASE}/identityapi/myconnect/token/short",
-            files={
-                "client_id": (None, "onlinereswebshortlived"),
-                "scope": (None, "onlineresweb"),
+            multipart={
+                "client_id": "onlinereswebshortlived",
+                "scope": "onlineresweb",
             },
             headers={**headers_base, "x-requestid": str(uuid.uuid4())},
             timeout=20,
