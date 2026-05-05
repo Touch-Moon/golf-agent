@@ -22,7 +22,8 @@ def fetch_api(facility_id: str, slug: str, target_date: date, cutoff: tuple) -> 
     date_str = target_date.strftime("%Y-%m-%d")
     url = f"https://www.golfnow.com/tee-times/facility/{facility_id}-{slug}/search"
     headers = {**_GOLFNOW_HEADERS, "Referer": url}
-    params  = {"date": date_str, "time": "all", "players": 0, "holes": 2, "sortby": "Date"}
+    # players=4 → 4명 들어갈 수 있는 슬롯만 응답
+    params  = {"date": date_str, "time": "all", "players": 4, "holes": 2, "sortby": "Date"}
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=15)
         if resp.status_code == 200 and "json" in resp.headers.get("Content-Type", ""):
@@ -59,7 +60,7 @@ async def scrape_playwright(page, facility_id: str, slug: str, target_date: date
     date_str = target_date.strftime("%Y-%m-%d")
     url = (
         f"https://www.golfnow.com/tee-times/facility/{facility_id}-{slug}/search"
-        f"#date={date_str}&time=all&players=0&holes=2"
+        f"#date={date_str}&time=all&players=4&holes=2"
     )
     try:
         await page.goto(url, wait_until="networkidle", timeout=30000)

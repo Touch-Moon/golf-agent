@@ -18,7 +18,8 @@ async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> li
     # 직접 검색 URL 구성 (날짜는 zero-padding 없음)
     base = booking_url.rstrip("/").split("/Home/")[0]  # 베이스 도메인만 추출
     date_param = f"{target_date.year}-{target_date.month}-{target_date.day}"
-    url = f"{base}/Home/nIndex?CourseId=2,3,1&Date={date_param}&Time=AnyTime&Player=99&Hole=Any"
+    # Player=4 → 4명 가능한 슬롯만 응답 (이전 99는 player 수 무관 = 부분 예약 슬롯도 포함)
+    url = f"{base}/Home/nIndex?CourseId=2,3,1&Date={date_param}&Time=AnyTime&Player=4&Hole=Any"
     log(f"  [prophetservices] {url}")
 
     try:

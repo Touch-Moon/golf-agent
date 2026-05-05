@@ -32,7 +32,7 @@ def _fetch_api(club_slug: str, target_date: date, cutoff: tuple) -> list | None:
         "Referer": f"{_API_BASE}/club/{club_slug}",
         "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
     }
-    params = {"date": date_str, "nb_of_holes": 18, "nb_of_players": 1}
+    params = {"date": date_str, "nb_of_holes": 18, "nb_of_players": 4}
     try:
         resp = requests.get(url, headers=headers, params=params, timeout=15)
         if resp.status_code == 200 and "json" in resp.headers.get("content-type", ""):
