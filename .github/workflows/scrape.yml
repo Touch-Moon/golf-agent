@@ -3,9 +3,9 @@ name: Golf Tee Time Scrape
 # ──────────────────────────────────────────────────────────────
 # Schedule: Mon–Fri, Winnipeg 08:00
 #   GitHub Actions cron is UTC-only, so we register both DST and
-#   non-DST trigger times and let the in-job guard decide whether
-#   to actually run. The runner is also typically queued 5–15 min
-#   late, so we trigger 10 min early.
+#   non-DST trigger times. GitHub's scheduler can run 1–4 hours
+#   late under high load, so the in-job guard allows up to 15:00
+#   Winnipeg time (07:00–15:00 window).
 #
 #   CDT (summer, UTC-5):  Winnipeg 07:50 = UTC 12:50
 #   CST (winter, UTC-6):  Winnipeg 07:50 = UTC 13:50
@@ -83,12 +83,12 @@ jobs:
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
             echo "::notice::Manual dispatch — running scraper regardless of time window."
-          elif [ $TOTAL -ge 450 ] && [ $TOTAL -le 540 ]; then
+          elif [ $TOTAL -ge 420 ] && [ $TOTAL -le 900 ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Within 07:30–09:00 Winnipeg window — running scraper."
+            echo "::notice::Within 07:00–15:00 Winnipeg window — running scraper."
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipped — outside Winnipeg 07:30–09:00 window."
+            echo "::notice::Skipped — outside Winnipeg 07:00–15:00 window."
           fi
 
       - name: Run scraper
