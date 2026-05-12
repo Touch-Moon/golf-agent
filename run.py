@@ -258,6 +258,13 @@ async def main():
     today  = date.today()
     season = calc_season(today)
 
+    # 텔레그램 자동 알림: 월요일 오전 자동 실행 시에만 전송
+    # workflow_dispatch(봇 /scrape 또는 수동 트리거)일 경우 항상 전송
+    GITHUB_EVENT  = os.getenv("GITHUB_EVENT_NAME", "")
+    is_manual     = GITHUB_EVENT == "workflow_dispatch"
+    is_monday     = today.weekday() == 0
+    should_notify = is_monday or is_manual
+
     # 텔레그램에서 특정 날짜 요청 확인 (없으면 이번 주 토요일)
     requested_date = None
     if not dry_run and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -275,10 +282,10 @@ async def main():
             "📅 마니토바 골프 시즌: 4월 첫째 주 ~ 11월 둘째 주\n"
             "🔜 다음 시즌 개장 예정: 4월 첫째 주"
         )
-        if not dry_run:
-            send_telegram(msg, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
-        else:
+        if dry_run:
             print(msg)
+        elif should_notify:
+            send_telegram(msg, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
         log("Off-season. Exiting.")
         sys.exit(0)
 
@@ -377,9 +384,12 @@ async def main():
         print(message)
         print("=" * 60 + "\n")
         stats["telegram"] = "dry_run"
-    else:
+    elif should_notify:
         ok = send_telegram(message, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID)
         stats["telegram"] = "success" if ok else "FAILED"
+    else:
+        log(f"Telegram skipped (not Monday, trigger={GITHUB_EVENT or 'schedule'})")
+        stats["telegram"] = f"skipped (not Monday)"
 
     # ── 웹앱 import ──
     stats["webapp_import"] = import_to_webapp(target, results, WEBAPP_URL, API_SECRET_KEY)
