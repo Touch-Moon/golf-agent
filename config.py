@@ -15,6 +15,7 @@ TEE_INTERVAL_MINUTES = {
     "John Blumberg Golf Course":      10,
     "Southside Golf Course":          10,
     "Windsor Park Golf Course":       10,
+    "Steinbach Golf Club":     10,
     "_default":                       10,
 }
 
@@ -208,6 +209,17 @@ INDIVIDUAL_COURSES = [
         "distance_km": 10,
         "holes": 18,
         "fallback_price": 48,
+        "cart_mandatory": False,
+    },
+    {
+        "name": "Steinbach Golf Club",
+        "booking_url": "https://www.tee-on.com/PubGolf/servlet/com.teeon.teesheet.servlets.golfersection.ComboLanding?CourseCode=STEI&FromCourseWebsite=true",
+        "homepage": "https://www.steinbachgolfclub.com/",
+        "phone": None,
+        "system": "tee_on",
+        "distance_km": 60,
+        "holes": 18,
+        "fallback_price": None,
         "cart_mandatory": False,
     },
 ]
