@@ -23,6 +23,7 @@ URL이 바뀌면 이 파일과 [config.py](config.py)를 같이 업데이트.
 | Larters at St. Andrews | https://www.tee-on.com/PubGolf/servlet/com.teeon.teesheet.servlets.golfersection.ComboLanding?CourseCode=LART&FromCourseWebsite=true | SearchSteps |
 | Southside Golf Course | https://www.tee-on.com/PubGolf/servlet/com.teeon.teesheet.servlets.golfersection.ComboLanding?CourseCode=STHS&FromCourseWebsite=true | SearchSteps |
 | Windsor Park Golf Course | https://www.tee-on.com/PubGolf/servlet/com.teeon.teesheet.servlets.golfersection.WebBookingSearchSteps?FromTrailSearch=true&CourseCode=WIPA&CourseGroupID=11354 | SearchSteps (직접) |
+| Transcona Golf Club | https://www.tee-on.com/PubGolf/servlet/com.teeon.teesheet.servlets.golfersection.ComboLanding?CourseCode=TRAN&FromCourseWebsite=true | SearchSteps |
 
 **스크래핑 규칙:**
 - ComboLanding URL이면 페이지 내 `a:has-text('Public Enter Here')` 클릭

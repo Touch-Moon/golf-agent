@@ -222,6 +222,17 @@ INDIVIDUAL_COURSES = [
         "fallback_price": None,
         "cart_mandatory": False,
     },
+    {
+        "name": "Transcona Golf Club",
+        "booking_url": "https://www.tee-on.com/PubGolf/servlet/com.teeon.teesheet.servlets.golfersection.ComboLanding?CourseCode=TRAN&FromCourseWebsite=true",
+        "homepage": "https://www.transconagolfclub.com/",
+        "phone": "(204) 224-7867",
+        "system": "tee_on",
+        "distance_km": 20,
+        "holes": 18,
+        "fallback_price": None,
+        "cart_mandatory": False,
+    },
 ]
 
 # Courses fetched via GolfNow API (duplicates vs INDIVIDUAL_COURSES are auto-skipped)
