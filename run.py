@@ -312,14 +312,17 @@ async def main():
         # 직접 API 코스(teeitup/cps)는 page 미사용 → 즉시 끝나고 슬롯 반환.
         # anti-bot 회피: 전역 동시성 + 도메인별 동시성 제한.
         log("=== Individual courses (parallel) ===")
-        GLOBAL_CONCURRENCY = 8       # 전체 동시 코스 수
-        PER_HOST_CONCURRENCY = 3     # 같은 도메인 동시 수
+        GLOBAL_CONCURRENCY = 10      # 전체 동시 코스 수
+        PER_HOST_DEFAULT = 3         # 같은 도메인 기본 동시 수
+        # tee-on.com 은 6개 코스가 공유 → 6 동시 허용(한 배치). Tee-On은 SaaS라 부하 견딤.
+        PER_HOST_OVERRIDE = {"www.tee-on.com": 6}
         global_sem = asyncio.Semaphore(GLOBAL_CONCURRENCY)
         host_sems: dict[str, asyncio.Semaphore] = {}
 
         async def crawl_one(course: dict) -> dict:
             host = urlparse(course.get("booking_url", "") or "").netloc or course["name"]
-            hsem = host_sems.setdefault(host, asyncio.Semaphore(PER_HOST_CONCURRENCY))
+            limit = PER_HOST_OVERRIDE.get(host, PER_HOST_DEFAULT)
+            hsem = host_sems.setdefault(host, asyncio.Semaphore(limit))
             async with global_sem, hsem:
                 ctx = await browser.new_context(
                     user_agent=(

@@ -47,7 +47,7 @@ def _fetch(host: str, target_date: date, cutoff: tuple) -> list:
         tok = (tr.json() or {}).get("access_token")
         if not tok:
             log(f"  [cps_golf] no token ({tr.status_code}) {host}")
-            return []
+            return None  # 실패 → 재시도 대상
 
         tid = str(_uuid.uuid4())
         headers = {
@@ -84,13 +84,13 @@ def _fetch(host: str, target_date: date, cutoff: tuple) -> list:
         rr = s.get(f"{api}/TeeTimes", params=params, headers=headers)
         if rr.status_code != 200:
             log(f"  [cps_golf] TeeTimes {rr.status_code} {host}")
-            return []
+            return None  # 실패(CF 차단 등) → 재시도 대상
         data = rr.json()
         content = data if isinstance(data, list) else (data.get("content") or [])
-        return _parse(content, cutoff)
+        return _parse(content, cutoff)  # 정상: 빈 리스트면 진짜 슬롯 없음
     except Exception as e:
         log(f"  [cps_golf] direct API error ({host}): {e}")
-        return []
+        return None  # 실패 → 재시도 대상
     finally:
         try:
             s.close()
@@ -136,9 +136,17 @@ def _parse(content, cutoff: tuple) -> list:
 
 
 async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> list:
-    """page 인자는 호출부 호환용(미사용). 모든 처리는 직접 API."""
+    """page 인자는 호출부 호환용(미사용). 모든 처리는 직접 API.
+    Cloudflare(Bel Acres)는 병렬 부하에서 가끔 차단 → 실패(None) 시 1회 재시도."""
     host = _host(booking_url)
     log(f"  [cps_golf] direct API {host} {target_date}")
-    slots = await asyncio.to_thread(_fetch, host, target_date, cutoff)
-    log(f"  [cps_golf] → {len(slots)} slots")
-    return slots
+    for attempt in range(2):
+        if attempt:
+            await asyncio.sleep(4)
+            log(f"  [cps_golf] retry {host}")
+        slots = await asyncio.to_thread(_fetch, host, target_date, cutoff)
+        if slots is not None:
+            log(f"  [cps_golf] → {len(slots)} slots")
+            return slots
+    log(f"  [cps_golf] failed after retries {host}")
+    return []
