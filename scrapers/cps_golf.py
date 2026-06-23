@@ -72,9 +72,11 @@ def _fetch(host: str, target_date: date, cutoff: tuple) -> list:
 
         # 3) 티타임
         date_str = target_date.strftime("%a %b %d %Y")  # "Sat Jun 27 2026"
+        # courseIds 는 사이트마다 다름 (Bridges=1, Bel Acres=3). 범위를 한 번에 넘기면
+        # API가 실제 존재하는 코스의 슬롯만 반환 → 사이트별 하드코딩 불필요.
         params = {
             "searchDate": date_str, "holes": "18", "numberOfPlayer": "0",
-            "courseIds": "1", "searchTimeType": "0", "transactionId": tid,
+            "courseIds": "1,2,3,4,5,6,7,8", "searchTimeType": "0", "transactionId": tid,
             "teeOffTimeMin": "0", "teeOffTimeMax": "23", "isChangeTeeOffTime": "true",
             "teeSheetSearchView": "5", "classCode": "R", "defaultOnlineRate": "N",
             "isUseCapacityPricing": "false", "memberStoreId": "1", "searchType": "1",
