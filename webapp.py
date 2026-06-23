@@ -7,6 +7,11 @@ from logger import log
 
 
 def import_to_webapp(target_date: date, results: list, webapp_url: str, api_secret: str) -> str:
+    # ⚠️ 환경변수(GitHub Secret 등)에 끼어든 줄바꿈/공백을 제거.
+    #    안 하면 "Invalid ... character(s) in header value" 로 헤더 생성 시 예외 → import 전체 실패.
+    api_secret = (api_secret or "").strip()
+    webapp_url = (webapp_url or "").strip().rstrip("/")
+
     if not api_secret or not webapp_url:
         log("WEBAPP_URL or API_SECRET_KEY not set — skipping web import")
         return "skipped"
