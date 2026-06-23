@@ -1,167 +1,142 @@
 """
-CPS Golf booking system scraper.
-Courses: Bridges Golf Course
+CPS Golf (.cps.golf) — DIRECT API (브라우저 불필요).
+Courses: Bridges, Bel Acres (둘 다 동일 흐름).
 
-CPS Golf (.cps.golf domain) — Angular SPA. TeeTimes 데이터는 비동기 API로 로드됨.
-실제 API: /onlineres/onlineapi/api/v1/onlinereservation/TeeTimes?searchDate=...
+핵심 발견 (2026-06 실측):
+  단명 토큰을 시크릿 없이 발급받고, 최소 헤더 + transactionId 만으로 TeeTimes JSON 직접 호출 가능.
+  Bel Acres 의 Cloudflare 는 curl_cffi 의 브라우저 임퍼소네이트(TLS 지문 위장)로 우회 시도.
 
-주의: SPA는 URL의 Date= 파라미터를 무시함. 날짜는 캘린더 클릭으로만 변경됨.
+흐름:
+  1) POST https://{host}/identityapi/myconnect/token/short
+        form: grant_type=client_credentials, client_id=onlinereswebshortlived
+        → { access_token }   (시크릿 불필요, 수명 ~10분)
+  2) POST https://{host}/onlineres/onlineapi/api/v1/onlinereservation/RegisterTransactionId?transactionId={uuid}
+        json: {"transactionId": uuid}   → "true"
+  3) GET  .../onlinereservation/TeeTimes?searchDate={Day Mon DD YYYY}&courseIds=1&transactionId={uuid}&holes=18&...
+        → { content: [ {startTime, shItemPrices:[{displayPrice}], ...}, ... ] }
+
+필수 헤더(최소): Authorization, client-id:onlineresweb, X-TerminalId:3, x-requestid:{uuid},
+                 x-componentid:1, x-siteid:1, x-productid:1, x-moduleid:7, Accept
+(x-websiteid / x-timezone* 는 불필요 — 실측 확인)
 """
 import asyncio
+import uuid as _uuid
 from datetime import date
+from urllib.parse import urlparse
 
-from scrapers.base import parse_time, make_slot
+from curl_cffi import requests as creq
+
 from logger import log
 
-_MONTH_NAMES = {
-    'January': 1, 'February': 2, 'March': 3, 'April': 4,
-    'May': 5, 'June': 6, 'July': 7, 'August': 8,
-    'September': 9, 'October': 10, 'November': 11, 'December': 12,
-}
+
+def _host(booking_url: str) -> str:
+    return urlparse(booking_url).netloc  # e.g. bridgesgccan.cps.golf / belacres.cps.golf
 
 
-async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> list:
-    # Angular SPA는 URL의 Date= 파라미터를 무시 → base URL만 사용
-    log(f"  [cps_golf] {booking_url}")
-
-    captured: list = []
-
-    async def on_response(resp):
-        if "TeeTimes" in resp.url and resp.status == 200:
-            log(f"  [cps_golf] API hit: {resp.url[resp.url.find('searchDate='):resp.url.find('searchDate=')+28]}")
-            try:
-                captured.append(await resp.json())
-            except Exception:
-                pass
-
-    page.on("response", on_response)
-
+def _fetch(host: str, target_date: date, cutoff: tuple) -> list:
+    base = f"https://{host}"
+    api = base + "/onlineres/onlineapi/api/v1/onlinereservation"
+    # impersonate="chrome" → 실제 크롬 TLS/헤더 지문 → Cloudflare Bot Fight Mode 우회 시도
+    s = creq.Session(impersonate="chrome", timeout=25)
     try:
-        await page.goto(booking_url, wait_until="domcontentloaded", timeout=45000)
+        # 1) 단명 토큰 (시크릿 불필요)
+        tr = s.post(
+            base + "/identityapi/myconnect/token/short",
+            data={"grant_type": "client_credentials", "client_id": "onlinereswebshortlived"},
+        )
+        tok = (tr.json() or {}).get("access_token")
+        if not tok:
+            log(f"  [cps_golf] no token ({tr.status_code}) {host}")
+            return []
+
+        tid = str(_uuid.uuid4())
+        headers = {
+            "Authorization": "Bearer " + tok,
+            "client-id": "onlineresweb",
+            "X-TerminalId": "3",
+            "x-requestid": str(_uuid.uuid4()),
+            "x-componentid": "1",
+            "x-siteid": "1",
+            "x-productid": "1",
+            "x-moduleid": "7",
+            "Accept": "application/json, text/plain, */*",
+        }
+
+        # 2) 트랜잭션 등록
+        s.post(
+            f"{api}/RegisterTransactionId",
+            params={"transactionId": tid},
+            json={"transactionId": tid},
+            headers=headers,
+        )
+
+        # 3) 티타임
+        date_str = target_date.strftime("%a %b %d %Y")  # "Sat Jun 27 2026"
+        params = {
+            "searchDate": date_str, "holes": "18", "numberOfPlayer": "0",
+            "courseIds": "1", "searchTimeType": "0", "transactionId": tid,
+            "teeOffTimeMin": "0", "teeOffTimeMax": "23", "isChangeTeeOffTime": "true",
+            "teeSheetSearchView": "5", "classCode": "R", "defaultOnlineRate": "N",
+            "isUseCapacityPricing": "false", "memberStoreId": "1", "searchType": "1",
+        }
+        rr = s.get(f"{api}/TeeTimes", params=params, headers=headers)
+        if rr.status_code != 200:
+            log(f"  [cps_golf] TeeTimes {rr.status_code} {host}")
+            return []
+        data = rr.json()
+        content = data if isinstance(data, list) else (data.get("content") or [])
+        return _parse(content, cutoff)
     except Exception as e:
-        log(f"  [cps_golf] goto failed: {e}")
-        page.remove_listener("response", on_response)
+        log(f"  [cps_golf] direct API error ({host}): {e}")
         return []
-
-    # 초기 렌더링 대기 (default 날짜 API 호출 포함)
-    await asyncio.sleep(4)
-
-    # 캘린더에서 target_date 클릭
-    clicked = await _select_calendar_date(page, target_date)
-    if clicked:
-        log(f"  [cps_golf] Calendar clicked: {target_date}")
-    else:
-        log(f"  [cps_golf] Calendar click failed — falling back to default date data")
-
-    # 날짜 클릭 후 새 API 응답 대기 (최대 20초)
-    expected_count = 2 if clicked else 1
-    for _ in range(20):
-        if len(captured) >= expected_count:
-            break
-        await asyncio.sleep(1)
-
-    page.remove_listener("response", on_response)
-
-    if not captured:
-        log(f"  [cps_golf] TeeTimes API 응답 없음")
-        return []
-
-    # 마지막 캡처 = 날짜 클릭 후 응답 (클릭 성공 시)
-    return _parse_teetimes(captured[-1], cutoff)
-
-
-async def _select_calendar_date(page, target_date: date) -> bool:
-    """
-    CPS Golf Angular 캘린더에서 target_date 클릭.
-    필요 시 달 이동 (최대 3회). 성공 시 True.
-    """
-    for _ in range(3):
-        # 현재 표시 달/년 파싱 ("May 2026" 형식 텍스트 노드 탐색)
-        displayed_month, displayed_year = None, None
+    finally:
         try:
-            month_text = await page.evaluate("""
-                () => {
-                    const walker = document.createTreeWalker(
-                        document.body, NodeFilter.SHOW_TEXT
-                    );
-                    let node;
-                    while ((node = walker.nextNode())) {
-                        const t = node.textContent.trim();
-                        if (/^[A-Z][a-z]+ \\d{4}$/.test(t)) return t;
-                    }
-                    return null;
-                }
-            """)
-            if month_text:
-                parts = month_text.split()
-                displayed_month = _MONTH_NAMES.get(parts[0])
-                displayed_year = int(parts[1])
+            s.close()
         except Exception:
             pass
 
-        # 표시 달 == target 달이면 날짜 클릭 시도
-        if displayed_month is None or (
-            displayed_month == target_date.month and displayed_year == target_date.year
-        ):
-            day_str = str(target_date.day)
-            spans = await page.query_selector_all("span.day-background-upper")
-            for span in spans:
-                cls = await span.get_attribute("class") or ""
-                txt = (await span.inner_text()).strip()
-                if (
-                    txt == day_str
-                    and "is-visible" in cls
-                    and "is-disabled" not in cls
-                    and "is-prev-month" not in cls
-                    and "is-next-month" not in cls
-                ):
-                    await span.click()
-                    return True
-            return False  # 해당 날짜 없음 (disabled 또는 범위 밖)
 
-        # target 달이 뒤면 다음 달로 이동
-        buttons = await page.query_selector_all("button.mat-raised-button")
-        moved = False
-        for btn in buttons:
-            txt = (await btn.inner_text()).strip()
-            cls = await btn.get_attribute("class") or ""
-            if ">" in txt and "mat-button-disabled" not in cls:
-                await btn.click()
-                await asyncio.sleep(1)
-                moved = True
-                break
-        if not moved:
-            break
-
-    return False
-
-
-def _parse_teetimes(data: dict, cutoff: tuple) -> list:
+def _parse(content, cutoff: tuple) -> list:
     slots = []
     seen = set()
-    for item in data.get("content", []):
-        start = item.get("startTime", "")
-        if not start:
+    for tt in content or []:
+        if not isinstance(tt, dict):
             continue
-        # ISO datetime: "2026-05-09T08:21:00" → "08:21"
-        time_part = start.split("T")[1][:5] if "T" in start else start
-        dt = parse_time(time_part)
-        if not dt or (dt.hour, dt.minute) >= cutoff:
+        st = tt.get("startTime") or tt.get("StartTime")
+        if not st or "T" not in st:
             continue
-        if time_part in seen:
+        hm = st.split("T")[1][:5]  # "2026-06-27T07:00:00" → "07:00"
+        try:
+            h, m = int(hm[:2]), int(hm[3:5])
+        except (ValueError, IndexError):
             continue
-        seen.add(time_part)
+        if (h, m) >= cutoff:
+            continue
+        if hm in seen:
+            continue
+        seen.add(hm)
 
-        prices = item.get("shItemPrices", [])
         price = None
-        if prices:
-            p = prices[0].get("displayPrice") or prices[0].get("taxInclusivePrice") or prices[0].get("price")
-            try:
-                price = float(p) if p is not None else None
-            except (TypeError, ValueError):
-                price = None
+        prices = tt.get("shItemPrices") or []
+        if prices and isinstance(prices[0], dict):
+            p = prices[0].get("displayPrice")
+            if p is None:
+                p = prices[0].get("price")
+            if p is not None:
+                try:
+                    price = round(float(p))
+                except (TypeError, ValueError):
+                    price = None
+        slots.append({"time": hm, "price": price, "is_hot_deal": False})
 
-        slot = make_slot(time_part, price)
-        if slot:
-            slots.append(slot)
+    slots.sort(key=lambda x: x["time"])
+    return slots
+
+
+async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> list:
+    """page 인자는 호출부 호환용(미사용). 모든 처리는 직접 API."""
+    host = _host(booking_url)
+    log(f"  [cps_golf] direct API {host} {target_date}")
+    slots = await asyncio.to_thread(_fetch, host, target_date, cutoff)
+    log(f"  [cps_golf] → {len(slots)} slots")
     return slots
