@@ -1,87 +1,102 @@
 """
-Tee It Up booking system scraper.
+Tee It Up booking system scraper — DIRECT Kenna API (브라우저 불필요).
 Courses: Kingswood, Maplewood, John Blumberg, Assiniboine, Whispering Winds
 
-Tee It Up (.book.teeitup.com) — React SPA backed by Kenna API
-(`phx-api-be-east-1b.kenna.io/v2/tee-times`). 직접 fetch 403이므로 Playwright 필수.
-네트워크 응답에서 JSON 인터셉트.
+핵심 발견(2026-06): Kenna API는 `x-be-alias: {slug}` 헤더 하나만 있으면
+Playwright 없이 직접 JSON 호출이 된다. (헤더 누락 시 "x-be-alias is required" 403/400)
 
-API 응답 구조:
-  list[1]
-    └─ { dayInfo, teetimes: list[N], courseId, ... }
-        └─ teetimes[i]: { teetime: "2026-05-09T14:08:00.000Z" (UTC ISO),
-                          rates: [{ greenFeeCart: 7000 (cents),
-                                    promotion: { greenFeeCart: 5950 } }],
-                          minPlayers, maxPlayers, ... }
+흐름:
+  1) GET https://phx-api-be-east-1b.kenna.io/alias/{slug}/facilities   → facility id
+  2) GET https://phx-api-be-east-1b.kenna.io/v2/tee-times?date=YYYY-MM-DD&facilityIds={id}
+        → { ... , teetimes: [...] }
+  두 호출 모두 헤더 `x-be-alias: {slug}` 필요.
 
-⚠️ teetime은 UTC. 위니펙 로컬(CDT/CST)로 변환 필요.
+teetime은 UTC ISO → America/Winnipeg 변환. 가격은 rates[0].(promotion.)greenFeeCart (cents).
+slug 은 booking_url 서브도메인에서 추출. API 실패(네트워크/구조 변경) 시 Playwright 폴백.
 """
 import asyncio
 import re
 from datetime import date, datetime
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
+
+import requests
 
 from scrapers.base import parse_time, make_slot, body_text_fallback
 from logger import log
 
 _WPG_TZ = ZoneInfo("America/Winnipeg")
+_KENNA = "https://phx-api-be-east-1b.kenna.io"
+_BASE_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                  "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*",
+}
+
+
+def _slug_from_url(booking_url: str) -> str:
+    """https://kingswood-golf-country-club.book.teeitup.com/ → kingswood-golf-country-club"""
+    host = urlparse(booking_url).netloc
+    if not host:
+        return ""
+    return host.split(".book.teeitup.com")[0].split(".")[0]
+
+
+def _fetch_api(slug: str, target_date: date):
+    """Kenna API 직접 호출 (블로킹). 성공 시 tee-times JSON, 실패 시 None."""
+    headers = {**_BASE_HEADERS, "x-be-alias": slug}
+    try:
+        # 1) slug → facility id(s)
+        fr = requests.get(f"{_KENNA}/alias/{slug}/facilities", headers=headers, timeout=15)
+        fr.raise_for_status()
+        facilities = fr.json()
+        if not isinstance(facilities, list) or not facilities:
+            log(f"  [teeitup] no facilities for slug={slug}")
+            return None
+        fac_ids = ",".join(str(f.get("id")) for f in facilities if f.get("id"))
+        if not fac_ids:
+            return None
+
+        # 2) tee-times
+        date_str = target_date.strftime("%Y-%m-%d")
+        tr = requests.get(
+            f"{_KENNA}/v2/tee-times",
+            params={"date": date_str, "facilityIds": fac_ids},
+            headers=headers,
+            timeout=20,
+        )
+        tr.raise_for_status()
+        return tr.json()
+    except Exception as e:
+        log(f"  [teeitup] direct API error (slug={slug}): {e}")
+        return None
 
 
 async def scrape(page, booking_url: str, target_date: date, cutoff: tuple) -> list:
-    date_str = target_date.strftime("%Y-%m-%d")
-    # Tee It Up SPA는 필터 쿼리(holes/golfers/max)가 있어야 슬롯을 노출함.
-    # 필터 없는 bare URL은 빈 상태로 머무름 → 캡처할 JSON 없음.
-    url = f"{booking_url.rstrip('/')}?date={date_str}&golfers=4&holes=18&max=999999"
-    log(f"  [teeitup] {url}")
+    """
+    1순위: Kenna API 직접 호출(브라우저 불필요, 빠르고 안정적).
+    2순위: API 실패 시 Playwright 폴백(구조 변경 대비).
+    page 인자는 폴백 때만 사용(호출부 호환 유지).
+    """
+    slug = _slug_from_url(booking_url)
 
-    captured: list[dict] = []
+    if slug:
+        log(f"  [teeitup] direct API slug={slug} date={target_date}")
+        data = await asyncio.to_thread(_fetch_api, slug, target_date)
+        if data is not None:
+            slots = _parse_json(data, cutoff)
+            log(f"  [teeitup] API → {len(slots)} slots")
+            return slots  # API 성공이면 결과 그대로(0개여도 진짜 0개)
 
-    async def handle_response(response):
-        if response.status == 200:
-            ct = response.headers.get("content-type", "")
-            if "json" in ct:
-                url_lower = response.url.lower()
-                if any(kw in url_lower for kw in ["tee", "slot", "time", "booking", "avail"]):
-                    try:
-                        captured.append(await response.json())
-                    except Exception:
-                        pass
-
-    page.on("response", handle_response)
-
-    # TeeItUp SPA는 networkidle이 안 떨어짐 (analytics/소켓 ping 지속)
-    # → domcontentloaded로 진입한 뒤 sleep 동안 API 응답이 도착할 시간을 주고,
-    #   timeout이 떨어져도 이미 캡처된 JSON을 파싱.
-    try:
-        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
-    except Exception as e:
-        log(f"  [teeitup] goto warn: {e} — proceeding with captured responses")
-    await asyncio.sleep(6)
-
-    page.remove_listener("response", handle_response)
-    log(f"  [teeitup] captured {len(captured)} JSON responses")
-
-    # 1) JSON 인터셉트
-    for data in captured:
-        slots = _parse_json(data, cutoff)
-        if slots:
-            return slots
-
-    # 2) DOM 파싱 (React SPA)
-    slots = await _parse_dom(page, cutoff)
-    if slots:
-        return slots
-
-    # 3) body 폴백
-    return await body_text_fallback(page, cutoff)
+    # API 실패(slug 추출 실패/네트워크/구조 변경) → 기존 Playwright 경로
+    log(f"  [teeitup] API unavailable → Playwright fallback")
+    return await _scrape_playwright(page, booking_url, target_date, cutoff)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# JSON 파서 (기존 로직 유지 — 직접 API/인터셉트 응답 동일 구조)
+# ─────────────────────────────────────────────────────────────────────────────
 def _parse_json(data, cutoff: tuple) -> list:
-    """
-    Kenna API 응답 구조: list[1] of facility wrappers, each with .teetimes[].
-    teetime은 UTC ISO → 위니펙 로컬 변환. 가격은 rates[0].promotion.greenFeeCart
-    (없으면 rates[0].greenFeeCart) — 단위는 cents.
-    """
     facilities = data if isinstance(data, list) else [data]
     slots = []
     seen = set()
@@ -129,17 +144,54 @@ def _parse_json(data, cutoff: tuple) -> list:
 
 
 def _to_local(time_raw) -> datetime | None:
-    """ISO UTC 문자열 → America/Winnipeg datetime."""
     if not isinstance(time_raw, str):
         return None
     try:
-        # "2026-05-09T14:08:00.000Z" 또는 "...+00:00"
         dt_utc = datetime.fromisoformat(time_raw.replace("Z", "+00:00"))
         return dt_utc.astimezone(_WPG_TZ)
     except (ValueError, TypeError):
-        # HH:MM 등 단순 시간 문자열은 fallback (drift 방지용)
-        dt = parse_time(time_raw)
-        return dt
+        return parse_time(time_raw)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Playwright 폴백 (기존 로직)
+# ─────────────────────────────────────────────────────────────────────────────
+async def _scrape_playwright(page, booking_url: str, target_date: date, cutoff: tuple) -> list:
+    date_str = target_date.strftime("%Y-%m-%d")
+    url = f"{booking_url.rstrip('/')}?date={date_str}&golfers=4&holes=18&max=999999"
+    log(f"  [teeitup] (fallback) {url}")
+
+    captured: list[dict] = []
+
+    async def handle_response(response):
+        if response.status == 200:
+            ct = response.headers.get("content-type", "")
+            if "json" in ct:
+                url_lower = response.url.lower()
+                if any(kw in url_lower for kw in ["tee", "slot", "time", "booking", "avail"]):
+                    try:
+                        captured.append(await response.json())
+                    except Exception:
+                        pass
+
+    page.on("response", handle_response)
+    try:
+        await page.goto(url, wait_until="domcontentloaded", timeout=30000)
+    except Exception as e:
+        log(f"  [teeitup] goto warn: {e} — proceeding with captured responses")
+    await asyncio.sleep(6)
+    page.remove_listener("response", handle_response)
+    log(f"  [teeitup] (fallback) captured {len(captured)} JSON responses")
+
+    for data in captured:
+        slots = _parse_json(data, cutoff)
+        if slots:
+            return slots
+
+    slots = await _parse_dom(page, cutoff)
+    if slots:
+        return slots
+    return await body_text_fallback(page, cutoff)
 
 
 async def _parse_dom(page, cutoff: tuple) -> list:
