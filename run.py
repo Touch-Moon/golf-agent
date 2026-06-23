@@ -16,6 +16,7 @@ import re
 import sys
 from datetime import date
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 from playwright.async_api import async_playwright
@@ -306,15 +307,39 @@ async def main():
         )
         page = await context.new_page()
 
-        # ── 개별 코스 크롤링 ──
-        log("=== Individual courses ===")
-        individual_results = []
-        for course in cfg.INDIVIDUAL_COURSES:
-            r = await crawl_individual(page, course, target)
-            individual_results.append(r)
-            if r["status"] == "yellow":
-                stats["failures"].append(course["name"])
-            await asyncio.sleep(3)
+        # ── 개별 코스 크롤링 (병렬) ──
+        # 순차 → asyncio.gather. 코스마다 독립 context(Playwright 동시 실행).
+        # 직접 API 코스(teeitup/cps)는 page 미사용 → 즉시 끝나고 슬롯 반환.
+        # anti-bot 회피: 전역 동시성 + 도메인별 동시성 제한.
+        log("=== Individual courses (parallel) ===")
+        GLOBAL_CONCURRENCY = 8       # 전체 동시 코스 수
+        PER_HOST_CONCURRENCY = 3     # 같은 도메인 동시 수
+        global_sem = asyncio.Semaphore(GLOBAL_CONCURRENCY)
+        host_sems: dict[str, asyncio.Semaphore] = {}
+
+        async def crawl_one(course: dict) -> dict:
+            host = urlparse(course.get("booking_url", "") or "").netloc or course["name"]
+            hsem = host_sems.setdefault(host, asyncio.Semaphore(PER_HOST_CONCURRENCY))
+            async with global_sem, hsem:
+                ctx = await browser.new_context(
+                    user_agent=(
+                        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+                    ),
+                    viewport={"width": 1280, "height": 800},
+                )
+                pg = await ctx.new_page()
+                try:
+                    return await crawl_individual(pg, course, target)
+                finally:
+                    await ctx.close()
+
+        individual_results = list(
+            await asyncio.gather(*(crawl_one(c) for c in cfg.INDIVIDUAL_COURSES))
+        )
+        for r in individual_results:
+            if r.get("status") in ("error", "yellow"):
+                stats["failures"].append(r["name"])
         stats["individual_checked"] = len(individual_results)
         results.extend(individual_results)
 
